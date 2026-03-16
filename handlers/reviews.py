@@ -1,76 +1,112 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes
+from aiogram import Router, F, Bot
+from aiogram.types import Message, CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
 import database as db
+from config import ADMIN_IDS
+from keyboards import rating_kb, review_moderate_kb
 
-def get_review_keyboard(review_id: int):
-    """Клавиатура модерации отзыва"""
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("✅ Одобрить", callback_data=f"review_approve:{review_id}"),
-            InlineKeyboardButton("❌ Отклонить", callback_data=f"review_reject:{review_id}")
-        ],
-        [
-            InlineKeyboardButton("✏️ Редактировать", callback_data=f"review_edit:{review_id}")
-        ]
-    ])
+router = Router()
 
-async def notify_new_review(bot, admin_ids: list, review_data: dict):
-    """Отправить отзыв на модерацию"""
-    review_id = await db.create_review(review_data)
-    
-    stars = '⭐' * review_data.get('rating', 5)
-    
-    message = f"""
-📝 <b>НОВЫЙ ОТЗЫВ</b>
 
-{stars}
+class ReviewForm(StatesGroup):
+    text = State()
 
-👤 <b>Автор:</b> {review_data.get('author')}
-📱 <b>Телефон:</b> {review_data.get('phone')}
 
-💬 <i>"{review_data.get('text')}"</i>
-"""
-    
-    keyboard = get_review_keyboard(review_id)
-    
-    for admin_id in admin_ids:
+@router.message(F.text == "⭐ Отзывы")
+async def reviews_menu(msg: Message):
+    orders = await db.get_user_orders(msg.from_user.id, limit=5)
+    completed = [o for o in orders if o["status"] == "completed"]
+    if not completed:
+        avg = await db.get_avg_rating()
+        await msg.answer(
+            f"⭐ Средняя оценка кафе: <b>{avg}/5</b>\n\n"
+            f"Оставить отзыв можно после завершения заказа.",
+            parse_mode="HTML"
+        )
+        return
+    text = "⭐ <b>Оцените свой заказ:</b>\n\n"
+    from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    buttons = []
+    for o in completed[:3]:
+        items_str = ", ".join(i["name"] for i in o["items"])[:40]
+        buttons.append([InlineKeyboardButton(
+            text=f"{o['order_number']} — {items_str}",
+            callback_data=f"rev_start:{o['id']}"
+        )])
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await msg.answer(text, reply_markup=kb, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("rev_start:"))
+async def start_review(cb: CallbackQuery):
+    order_id = int(cb.data.split(":")[1])
+    await cb.message.edit_text(
+        "⭐ <b>Поставьте оценку:</b>",
+        reply_markup=rating_kb(order_id), parse_mode="HTML"
+    )
+
+
+@router.callback_query(F.data.startswith("rate:"))
+async def set_rating(cb: CallbackQuery, state: FSMContext):
+    parts = cb.data.split(":")
+    order_id, rating = int(parts[1]), int(parts[2])
+    await state.update_data(order_id=order_id, rating=rating)
+    await cb.message.edit_text(
+        f"{'⭐' * rating}\n\nНапишите комментарий к отзыву\n(или «—» чтобы пропустить):"
+    )
+    await state.set_state(ReviewForm.text)
+
+
+@router.message(ReviewForm.text)
+async def save_review(msg: Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    text = msg.text if msg.text != "—" else ""
+
+    await db.create_review(
+        telegram_id=msg.from_user.id,
+        order_id=data["order_id"],
+        rating=data["rating"],
+        text=text
+    )
+    await state.clear()
+    await msg.answer("✅ Спасибо за отзыв! Он будет опубликован после модерации.")
+
+    # Уведомить админов
+    order = await db.get_order(data["order_id"])
+    on = order["order_number"] if order else "?"
+    admin_text = (
+        f"⭐ <b>Новый отзыв</b>\n\n"
+        f"Заказ: {on}\n"
+        f"Оценка: {'⭐' * data['rating']}\n"
+        f"Текст: {text or '(без текста)'}\n"
+        f"От: {msg.from_user.first_name}"
+    )
+    pending = await db.get_pending_reviews()
+    rev_id = pending[0]["id"] if pending else 0
+    for aid in ADMIN_IDS:
         try:
             await bot.send_message(
-                chat_id=admin_id,
-                text=message,
-                parse_mode='HTML',
-                reply_markup=keyboard
+                aid, admin_text, parse_mode="HTML",
+                reply_markup=review_moderate_kb(rev_id)
             )
-        except Exception as e:
-            print(f"Error sending to admin {admin_id}: {e}")
-    
-    return review_id
+        except Exception:
+            pass
 
-async def handle_review_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка модерации отзыва"""
-    query = update.callback_query
-    await query.answer()
-    
-    data = query.data.split(':')
-    action = data[0]
-    review_id = int(data[1])
-    
-    if action == 'review_approve':
-        await db.update_review_status(review_id, 'approved')
-        await query.edit_message_text(
-            text=query.message.text + "\n\n✅ <b>ОДОБРЕН</b>",
-            parse_mode='HTML'
-        )
-        
-    elif action == 'review_reject':
-        await db.update_review_status(review_id, 'rejected')
-        await query.edit_message_text(
-            text=query.message.text + "\n\n❌ <b>ОТКЛОНЁН</b>",
-            parse_mode='HTML'
-        )
-        
-    elif action == 'review_edit':
-        context.user_data['editing_review'] = review_id
-        await query.message.reply_text(
-            "✏️ Отправьте отредактированный текст отзыва:"
-        )
+
+# ─── модерация (для админов, но обработчик здесь) ─────────
+@router.callback_query(F.data.startswith("rev_mod:"))
+async def moderate_review(cb: CallbackQuery, bot: Bot):
+    if cb.from_user.id not in ADMIN_IDS:
+        await cb.answer("⛔ Нет доступа", show_alert=True)
+        return
+    parts = cb.data.split(":")
+    review_id, action = int(parts[1]), parts[2]
+    await db.moderate_review(review_id, action)
+    label = "✅ Опубликован" if action == "approved" else "❌ Отклонён"
+    await cb.message.edit_text(
+        cb.message.text + f"\n\n<b>Статус: {label}</b>",
+        parse_mode="HTML"
+    )
+    await cb.answer(label)

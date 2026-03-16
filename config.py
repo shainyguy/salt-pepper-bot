@@ -3,17 +3,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Telegram
-BOT_TOKEN = os.getenv('BOT_TOKEN', 'YOUR_BOT_TOKEN')
-ADMIN_IDS = [int(id) for id in os.getenv('ADMIN_IDS', '').split(',') if id]
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+API_SECRET = os.getenv("API_SECRET", "change-me-secret")
+PORT = int(os.getenv("PORT", 8080))
+DB_PATH = os.getenv("DB_PATH", "cafe.db")
 
-# Webhook от сайта
-WEBHOOK_SECRET = os.getenv('WEBHOOK_SECRET', 'your-secret-key')
-WEBHOOK_PORT = int(os.getenv('PORT', 8080))
-
-# Сайт
-SITE_URL = os.getenv('SITE_URL', 'https://your-site.ru')
-SITE_ADMIN_URL = f"{SITE_URL}/?admin=solperecadmin2024"
-
-# База данных
-DATABASE_URL = os.getenv('DATABASE_URL', 'sqlite:///bot.db')
+CAFE_NAME = "Соль и Перец 🧂🌶"
+CAFE_ADDRESS = os.getenv("CAFE_ADDRESS", "ул. Примерная, 1")
+CAFE_PHONE = os.getenv("CAFE_PHONE", "+7 (999) 123-45-67")
+SITE_URL = os.getenv("SITE_URL", "https://salt-pepper.example.com")
+WORK_HOURS = os.getenv("WORK_HOURS", "10:00–22:00")
+POINTS_PER_RUBLE = 0.1          # 1 бонус за каждые 10 ₽
+POINTS_TO_RUBLE = 1.0           # 1 бонус = 1 ₽ скидки
